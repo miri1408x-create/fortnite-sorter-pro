@@ -1,0 +1,1 @@
+Deployment GuideCreate a public repository on GitHub named fortnite-sorter.Click "Add file" -> "Upload files".Upload fortnite_sorter_pro.py and requirements.txt.Commit the changes.Go to share.streamlit.io.Connect your GitHub and select the fortnite-sorter repository.Click Deploy.
