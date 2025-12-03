@@ -71,7 +71,7 @@ class FortniteAccountParser:
         if not line or line.startswith('#') or '====' in line: return None
         
         # 1. Credentials (Email:Pass)
-        # Matches typical email:pass combo
+        # Using the Old Script regex style but slightly more permissive for safety
         email_pass = re.search(r'([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)[:|\s]+([^|\s]+)', line)
         if not email_pass: return None
         
@@ -80,8 +80,7 @@ class FortniteAccountParser:
             'password': email_pass.group(2).strip()
         }
         
-        # 2. Prepare remaining string for attribute parsing
-        # We start searching AFTER the password to avoid confusion
+        # 2. Prepare remaining string
         remaining = line[email_pass.end():]
         
         # Helper extraction functions
@@ -92,7 +91,7 @@ class FortniteAccountParser:
         def get_int(pattern):
             m = re.search(pattern, remaining, re.IGNORECASE)
             if m:
-                # Remove commas from numbers (e.g. "1,050")
+                # Remove commas from numbers (e.g. "1,050" -> 1050)
                 clean_num = m.group(1).replace(',', '')
                 return int(clean_num)
             return 0
@@ -102,54 +101,54 @@ class FortniteAccountParser:
             return m.group(1).strip() if m else 'Unknown'
 
         # 3. Extract Attributes
-        acc['fa'] = get_val(r'(?:FA|Full Access)[:\s]*([a-zA-Z0-9]+)')
-        acc['stw'] = get_val(r'(?:STW|Save The World)[:\s]*([a-zA-Z0-9]+)')
-        acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks|V_Bucks)[:\s]*([\d,]+)')
+        # Using patterns compatible with Old Script
+        acc['fa'] = get_val(r'(?:FA|Full Access):\s*(Yes|No|True|False|1|0)')
+        acc['stw'] = get_val(r'(?:STW|Save The World):\s*(Yes|No|True|False|1|0)')
+        # Improved VBucks parser (Handles "1,050")
+        acc['vbucks'] = get_int(r'(?:Vbucks Count|V-Bucks|Vbucks|V_Bucks):\s*([\d,]+)')
         
-        # --- FIXED SKIN PARSING ---
+        # --- SKIN PARSING (Restored from Old Script) ---
         acc['skins'] = 0
         acc['skin_names'] = []
 
-        # Strategy 1: Explicit Count (Matches "Skins: [25]")
+        # Logic 1: Get Count [123]
+        # Old Script: r'Skins:\s*\[(\d+)\]'
         count_match = re.search(r'Skins:\s*\[(\d+)\]', remaining, re.IGNORECASE)
         if count_match:
             acc['skins'] = int(count_match.group(1))
-        
-        # Strategy 2: Old Script Pattern (The one that works for you)
-        # Matches "Skins: [12]: Name1, Name2"
-        # It looks for the colon ':' after the brackets
-        old_script_names = re.search(r'Skins:\s*\[\d*\]:\s*(.+?)(?=\s*\||$)', remaining, re.IGNORECASE)
-        
-        if old_script_names:
-            # We found it using the strict old method!
-            raw_names = old_script_names.group(1)
-            acc['skin_names'] = [n.strip() for n in raw_names.split(',') if n.strip()]
         else:
-            # Fallback: If strict method fails, try finding ANY list of names after "Skins:"
-            # This handles formats like "Skins: Name1, Name2" (no brackets)
-            skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
-            best_list = []
-            for section in skin_sections:
-                # Clean up brackets numbers [123] and other junk
-                clean = re.sub(r'[\[\(\<\{]\d+[\s\w]*[\]\)\>\}]', '', section)
-                clean = re.sub(r'[:=\-]', '', clean)
-                items = [x.strip() for x in clean.split(',')]
-                # Filter valid names (must be text, not numbers)
-                valid = [i for i in items if len(i) > 2 and not i.isdigit()]
-                if len(valid) > len(best_list):
-                    best_list = valid
-            
-            if best_list:
-                acc['skin_names'] = best_list
+            # Backup: Try finding just a number if brackets are missing
+            backup_count = re.search(r'Skins:\s*(\d+)(?!\d)', remaining, re.IGNORECASE)
+            if backup_count:
+                acc['skins'] = int(backup_count.group(1))
 
-        # If we found names but count is 0, update count
+        # Logic 2: Get Names
+        # Old Script: r'Skins:\s*\[\d*\]:\s*(.+?)(?=\s*\||$)'
+        # It looks for "Skins: [x]: Name1, Name2..."
+        skins_names_match = re.search(r'Skins:\s*(?:\[\d*\])?:\s*(.+?)(?=\s*\||$)', remaining, re.IGNORECASE)
+        
+        if skins_names_match:
+            raw_names = skins_names_match.group(1)
+            # Old Script Logic: Split by comma
+            acc['skin_names'] = [name.strip() for name in raw_names.split(',') if name.strip()]
+        else:
+            # Fallback for "Skins: Name1, Name2" (No colon/brackets)
+            # This catches logs that don't match the strict format above
+            secondary_match = re.search(r'Skins:(?!\s*[\d\[])\s*(.+?)(?=\s*\||$)', remaining, re.IGNORECASE)
+            if secondary_match:
+                raw_names = secondary_match.group(1)
+                potential_names = [n.strip() for n in raw_names.split(',')]
+                # Sanity check: ensure they aren't numbers
+                acc['skin_names'] = [n for n in potential_names if not n.isdigit() and len(n) > 2]
+
+        # Sync count if 0
         if acc['skins'] == 0 and len(acc['skin_names']) > 0:
             acc['skins'] = len(acc['skin_names'])
 
         # 4. Other Stats
-        acc['last_played'] = get_str(r'Last Played[:\s]*([^|]+)')
-        acc['level'] = get_int(r'Level[:\s]*(\d+)')
-        acc['platform'] = get_str(r'Platform[:\s]*([^|]+)')
+        acc['last_played'] = get_str(r'Last Played:\s*([^|]+)')
+        acc['level'] = get_int(r'Level:\s*(\d+)')
+        acc['platform'] = get_str(r'Platform:\s*([^|]+)')
         
         acc['is_hit'] = (acc['fa'] == 'Yes' and acc['stw'] == 'Yes')
         
@@ -165,7 +164,6 @@ class FortniteAccountParser:
                                 p = self.parse_line(line)
                                 if p:
                                     email = p['email']
-                                    # Merge logic: if duplicate, keep the one with more info (VBucks)
                                     if email not in self.accounts or p['vbucks'] > self.accounts[email].get('vbucks', 0):
                                         self.accounts[email] = p
                     except: pass
@@ -175,6 +173,7 @@ class FortniteAccountParser:
         self.stats['total_vbucks'] = sum(a['vbucks'] for a in vals)
         self.stats['hit_accounts'] = sum(1 for a in vals if a['is_hit'])
         self.stats['fa_yes'] = sum(1 for a in vals if a['fa'] == 'Yes')
+        self.stats['total_skins'] = sum(a['skins'] for a in vals)
         
         return len(vals)
 
@@ -302,7 +301,6 @@ def render_html_view(accounts_json):
                         skinsTxt = acc.skin_names.join(", ");
                     }}
                     
-                    // LEVEL LOGIC: Only show if Level > 0
                     let levelHTML = '';
                     if(acc.level > 0) {{
                         levelHTML = `
