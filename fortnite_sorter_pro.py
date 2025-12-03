@@ -77,6 +77,7 @@ class FortniteAccountParser:
             'email': email_pass.group(1).strip(),
             'password': email_pass.group(2).strip()
         }
+        # Remove credentials to safely parse the rest
         remaining = line.replace(f"{acc['email']}:{acc['password']}", "")
         
         def get_val(pattern, default='No'):
@@ -95,36 +96,41 @@ class FortniteAccountParser:
         acc['stw'] = get_val(r'(?:STW|Save The World)[:\s]*([a-zA-Z0-9]+)')
         acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks)[:\s]*(\d+)')
         
-        # --- ROBUST SKIN PARSING ---
+        # --- NEW SKIN PARSING STRATEGY ---
         acc['skin_names'] = []
-        
-        # 1. Capture the raw skin segment (everything after "Skins" until "|" or end of line)
-        skins_segment_match = re.search(r'Skins.*?(?=\s*\||$)', remaining, re.IGNORECASE)
-        
-        if skins_segment_match:
-            raw_segment = skins_segment_match.group(0)
-            
-            # Remove the label "Skins"
-            clean_segment = re.sub(r'Skins', '', raw_segment, flags=re.IGNORECASE)
-            # Remove bracket numbers like [12], (5)
-            clean_segment = re.sub(r'[\[\(\{\<]\d+[\]\)\}\>]', '', clean_segment) 
-            # Remove special chars often found near the count
-            clean_segment = re.sub(r'[:=\-]', '', clean_segment)
-            
-            # Split by comma and clean up individual names
-            potential_skins = [s.strip() for s in clean_segment.split(',') if s.strip()]
-            
-            # Filter out purely numeric values that might have survived
-            acc['skin_names'] = [name for name in potential_skins if not name.isdigit()]
+        acc['skins'] = 0
 
-        # 2. Get Skin Count
-        # First try to find explicit count in remaining text: [23]
-        count_match = re.search(r'Skins.*?(\d+)', remaining, re.IGNORECASE)
-        if count_match:
-             acc['skins'] = int(count_match.group(1))
-        else:
-             # Fallback: Count the names we found
-             acc['skins'] = len(acc['skin_names'])
+        # Find ALL occurrences of "Skins: ..."
+        # This regex grabs "Skins:" plus following text until a pipe |, double space, or end of line
+        all_skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
+
+        for section in all_skin_sections:
+            section = section.strip()
+            
+            # Check if this section is just a number (e.g. "241" or "[12]")
+            is_number_only = re.match(r'^[\d\[\]\(\)\s]+$', section)
+            
+            if is_number_only:
+                # It's the count! Extract digits
+                digits = re.search(r'(\d+)', section)
+                if digits:
+                    acc['skins'] = int(digits.group(1))
+            else:
+                # It contains letters, likely the names list!
+                # Clean it
+                clean_names = re.sub(r'[\[\(\{\<]\d+[\]\)\}\>]', '', section) # Remove [12]
+                clean_names = re.sub(r'[:=\-]', '', clean_names) # Remove junk
+                
+                # Split by comma
+                found_names = [s.strip() for s in clean_names.split(',') if s.strip()]
+                # Filter out accidental digits
+                found_names = [n for n in found_names if not n.isdigit() and len(n) > 2]
+                
+                if found_names:
+                    acc['skin_names'] = found_names
+                    # If we found names but count is still 0, update count
+                    if acc['skins'] == 0:
+                        acc['skins'] = len(found_names)
 
         acc['last_played'] = get_str(r'Last Played[:\s]*([^|]+)')
         acc['level'] = get_int(r'Level[:\s]*(\d+)')
@@ -190,7 +196,6 @@ def render_html_view(accounts_json):
         }}
         body {{ background: transparent; color: var(--text); font-family: 'Inter', sans-serif; margin: 0; }}
         
-        /* Filters */
         .controls {{ display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }}
         .btn {{
             background: var(--card-bg); border: 1px solid var(--border); color: var(--text);
@@ -199,10 +204,8 @@ def render_html_view(accounts_json):
         }}
         .btn:hover, .btn.active {{ border-color: var(--accent); color: var(--accent); background: rgba(255, 75, 75, 0.1); }}
         
-        /* Grid - BIGGER CARDS (min 400px) */
         .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 16px; }}
         
-        /* Card Design */
         .card {{
             background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
             padding: 16px; position: relative; transition: transform 0.1s;
@@ -210,21 +213,15 @@ def render_html_view(accounts_json):
         }}
         .card:hover {{ border-color: var(--muted); transform: translateY(-2px); }}
         
-        /* Top Row: Vbucks Left, Skins Right */
         .top-row {{ display: flex; justify-content: space-between; align-items: center; }}
         
-        .vbucks-badge {{ 
-            font-size: 1.4em; font-weight: 800; color: var(--blue); 
-            display: flex; align-items: center; gap: 6px;
-        }}
-        
+        .vbucks-badge {{ font-size: 1.4em; font-weight: 800; color: var(--blue); display: flex; align-items: center; gap: 6px; }}
         .skins-badge {{
             font-size: 1.1em; font-weight: 700; color: var(--text);
             background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 6px;
             display: flex; align-items: center; gap: 6px;
         }}
         
-        /* Email Box */
         .creds {{
             background: #00000050; padding: 10px; border-radius: 6px; font-family: monospace;
             font-size: 0.95em; border: 1px solid #ffffff10; cursor: pointer; color: var(--text);
@@ -232,7 +229,6 @@ def render_html_view(accounts_json):
         }}
         .creds:active {{ border-color: var(--accent); color: var(--accent); }}
         
-        /* Stats Grid */
         .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }}
         .stat-box {{ 
             background: rgba(255,255,255,0.03); padding: 8px; border-radius: 6px; text-align: center;
@@ -244,7 +240,6 @@ def render_html_view(accounts_json):
         .green {{ color: var(--green); }}
         .red {{ color: var(--red); }}
         
-        /* Skins List */
         .skins-box {{
             background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px;
             font-size: 0.85em; color: var(--muted); min-height: 40px;
@@ -283,14 +278,22 @@ def render_html_view(accounts_json):
                 }}
                 
                 items.forEach(acc => {{
-                    // Colors
                     const faClass = acc.fa === 'Yes' ? 'green' : 'red';
                     const stwClass = acc.stw === 'Yes' ? 'green' : 'red';
                     
-                    // Skins Text
                     let skinsTxt = "No skin names found";
                     if(acc.skin_names.length > 0) {{
                         skinsTxt = acc.skin_names.join(", ");
+                    }}
+                    
+                    // LEVEL LOGIC: Only show if Level > 0
+                    let levelHTML = '';
+                    if(acc.level > 0) {{
+                        levelHTML = `
+                        <div class="stat-box">
+                            <div class="stat-val">${{acc.level}}</div>
+                            <div class="stat-lbl">Level</div>
+                        </div>`;
                     }}
                     
                     const card = document.createElement('div');
@@ -309,7 +312,7 @@ def render_html_view(accounts_json):
                             ${{acc.email}}
                         </div>
                         
-                        <div class="stats">
+                        <div class="stats" style="grid-template-columns: repeat(${{acc.level > 0 ? 3 : 2}}, 1fr);">
                             <div class="stat-box" style="border-color: ${{acc.fa === 'Yes' ? 'rgba(16, 185, 129, 0.2)' : 'transparent'}}">
                                 <div class="stat-val ${{faClass}}">${{acc.fa}}</div>
                                 <div class="stat-lbl">Full Access</div>
@@ -318,10 +321,7 @@ def render_html_view(accounts_json):
                                 <div class="stat-val ${{stwClass}}">${{acc.stw}}</div>
                                 <div class="stat-lbl">Save World</div>
                             </div>
-                            <div class="stat-box">
-                                <div class="stat-val">${{acc.level}}</div>
-                                <div class="stat-lbl">Level</div>
-                            </div>
+                            ${{levelHTML}}
                         </div>
                         
                         <div class="skins-box">
