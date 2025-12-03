@@ -132,6 +132,7 @@ class FortniteAccountParser:
         level_match = re.search(r'Level[:\s]*(\d+)', remaining, re.IGNORECASE)
         account['level'] = int(level_match.group(1)) if level_match else 0
         
+        # Added to CSV headers below
         account['source_file'] = file_source
         account['is_hit'] = (account['fa'] == 'Yes' and account['stw'] == 'Yes') or (account['skins'] > 50) or (account['vbucks'] > 500)
         
@@ -209,7 +210,7 @@ class FortniteAccountParser:
             return ""
         output = io.StringIO()
         headers = ['email', 'password', 'fa', 'twofa', 'stw', 'vbucks', 'skins', 'skin_names', 
-                   'last_played', 'username', 'matches_played', 'points', 'platform', 'level', 'is_hit']
+                   'last_played', 'username', 'matches_played', 'points', 'platform', 'level', 'is_hit', 'source_file']
         writer = csv.DictWriter(output, fieldnames=headers)
         writer.writeheader()
         for acc in self.accounts.values():
