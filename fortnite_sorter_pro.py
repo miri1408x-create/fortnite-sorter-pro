@@ -95,14 +95,36 @@ class FortniteAccountParser:
         acc['stw'] = get_val(r'(?:STW|Save The World)[:\s]*([a-zA-Z0-9]+)')
         acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks)[:\s]*(\d+)')
         
-        # Skins Logic
-        skins_match = re.search(r'Skins[:\s]*\[(\d+)\]', remaining, re.IGNORECASE) or re.search(r'Skins[:\s]*(\d+)', remaining, re.IGNORECASE)
-        acc['skins'] = int(skins_match.group(1)) if skins_match else 0
-        
+        # --- ROBUST SKIN PARSING ---
         acc['skin_names'] = []
-        s_names = re.search(r'Skins:.*?\[\d*\]:?\s*(.+?)(?=\s*\||$)', remaining, re.IGNORECASE)
-        if s_names:
-            acc['skin_names'] = [s.strip() for s in s_names.group(1).split(',') if s.strip()]
+        
+        # 1. Capture the raw skin segment (everything after "Skins" until "|" or end of line)
+        skins_segment_match = re.search(r'Skins.*?(?=\s*\||$)', remaining, re.IGNORECASE)
+        
+        if skins_segment_match:
+            raw_segment = skins_segment_match.group(0)
+            
+            # Remove the label "Skins"
+            clean_segment = re.sub(r'Skins', '', raw_segment, flags=re.IGNORECASE)
+            # Remove bracket numbers like [12], (5)
+            clean_segment = re.sub(r'[\[\(\{\<]\d+[\]\)\}\>]', '', clean_segment) 
+            # Remove special chars often found near the count
+            clean_segment = re.sub(r'[:=\-]', '', clean_segment)
+            
+            # Split by comma and clean up individual names
+            potential_skins = [s.strip() for s in clean_segment.split(',') if s.strip()]
+            
+            # Filter out purely numeric values that might have survived
+            acc['skin_names'] = [name for name in potential_skins if not name.isdigit()]
+
+        # 2. Get Skin Count
+        # First try to find explicit count in remaining text: [23]
+        count_match = re.search(r'Skins.*?(\d+)', remaining, re.IGNORECASE)
+        if count_match:
+             acc['skins'] = int(count_match.group(1))
+        else:
+             # Fallback: Count the names we found
+             acc['skins'] = len(acc['skin_names'])
 
         acc['last_played'] = get_str(r'Last Played[:\s]*([^|]+)')
         acc['level'] = get_int(r'Level[:\s]*(\d+)')
@@ -142,7 +164,8 @@ class FortniteAccountParser:
         output.write("==================================================\n\n")
         
         for acc in sorted_accs:
-            line = f"{acc['email']}:{acc['password']} | V-Bucks: {acc['vbucks']} | Skins: {acc['skins']} | FA: {acc['fa']} | STW: {acc['stw']}"
+            skin_str = ", ".join(acc['skin_names']) if acc['skin_names'] else "None"
+            line = f"{acc['email']}:{acc['password']} | V-Bucks: {acc['vbucks']} | Skins: {acc['skins']} ({skin_str}) | FA: {acc['fa']} | STW: {acc['stw']}"
             if acc['level'] > 0:
                 line += f" | Level: {acc['level']}"
             if acc['last_played'] != 'Unknown':
