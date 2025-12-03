@@ -70,6 +70,7 @@ class FortniteAccountParser:
         line = line.strip()
         if not line or line.startswith('#') or '====' in line: return None
         
+        # 1. Credentials (Email:Pass)
         email_pass = re.search(r'([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)[:|\s]+([^|\s]+)', line)
         if not email_pass: return None
         
@@ -77,61 +78,70 @@ class FortniteAccountParser:
             'email': email_pass.group(1).strip(),
             'password': email_pass.group(2).strip()
         }
-        # Remove credentials to safely parse the rest
+        
+        # 2. Prepare remaining string for attribute parsing
         remaining = line.replace(f"{acc['email']}:{acc['password']}", "")
         
+        # Helper extraction functions
         def get_val(pattern, default='No'):
             m = re.search(pattern, remaining, re.IGNORECASE)
             return self.normalize_bool(m.group(1)) if m else default
 
         def get_int(pattern):
             m = re.search(pattern, remaining, re.IGNORECASE)
-            return int(m.group(1)) if m else 0
+            if m:
+                # Remove commas from numbers (e.g. "1,050")
+                clean_num = m.group(1).replace(',', '')
+                return int(clean_num)
+            return 0
 
         def get_str(pattern):
             m = re.search(pattern, remaining, re.IGNORECASE)
             return m.group(1).strip() if m else 'Unknown'
 
+        # 3. Extract Attributes
         acc['fa'] = get_val(r'(?:FA|Full Access)[:\s]*([a-zA-Z0-9]+)')
         acc['stw'] = get_val(r'(?:STW|Save The World)[:\s]*([a-zA-Z0-9]+)')
-        acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks)[:\s]*(\d+)')
+        acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks|V_Bucks)[:\s]*([\d,]+)')
         
-        # --- NEW SKIN PARSING STRATEGY ---
-        acc['skin_names'] = []
+        # --- ROBUST SKIN PARSING (The Fix) ---
         acc['skins'] = 0
+        acc['skin_names'] = []
 
-        # Find ALL occurrences of "Skins: ..."
-        # This regex grabs "Skins:" plus following text until a pipe |, double space, or end of line
-        all_skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
+        # Step A: Get Skin Count (Look for explicitly defined numbers)
+        count_match = re.search(r'Skins[:\s]*\[?(\d+)\]?', remaining, re.IGNORECASE)
+        if count_match:
+            acc['skins'] = int(count_match.group(1))
 
-        for section in all_skin_sections:
-            section = section.strip()
+        # Step B: Get Skin Names (Find longest comma-separated list after "Skins:")
+        # We find ALL text blocks that start with "Skins:"
+        skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
+        
+        best_skin_list = []
+        
+        for section in skin_sections:
+            # Clean junk from the section
+            # Remove [123], (123), (236 more)
+            clean = re.sub(r'[\[\(\<\{]\d+[\s\w]*[\]\)\>\}]', '', section)
+            clean = re.sub(r'[:=\-]', '', clean)
             
-            # Check if this section is just a number (e.g. "241" or "[12]")
-            is_number_only = re.match(r'^[\d\[\]\(\)\s]+$', section)
+            # Split by comma to get potential names
+            items = [x.strip() for x in clean.split(',')]
             
-            if is_number_only:
-                # It's the count! Extract digits
-                digits = re.search(r'(\d+)', section)
-                if digits:
-                    acc['skins'] = int(digits.group(1))
-            else:
-                # It contains letters, likely the names list!
-                # Clean it
-                clean_names = re.sub(r'[\[\(\{\<]\d+[\]\)\}\>]', '', section) # Remove [12]
-                clean_names = re.sub(r'[:=\-]', '', clean_names) # Remove junk
-                
-                # Split by comma
-                found_names = [s.strip() for s in clean_names.split(',') if s.strip()]
-                # Filter out accidental digits
-                found_names = [n for n in found_names if not n.isdigit() and len(n) > 2]
-                
-                if found_names:
-                    acc['skin_names'] = found_names
-                    # If we found names but count is still 0, update count
-                    if acc['skins'] == 0:
-                        acc['skins'] = len(found_names)
+            # Filter: A valid skin name is usually > 2 chars and NOT just a number
+            valid_names = [i for i in items if len(i) > 2 and not i.isdigit()]
+            
+            # If this section has more valid names than what we found before, keep it
+            if len(valid_names) > len(best_skin_list):
+                best_skin_list = valid_names
 
+        acc['skin_names'] = best_skin_list
+        
+        # Fallback: If count is still 0 but we found names, update count
+        if acc['skins'] == 0 and len(acc['skin_names']) > 0:
+            acc['skins'] = len(acc['skin_names'])
+
+        # 4. Other Stats
         acc['last_played'] = get_str(r'Last Played[:\s]*([^|]+)')
         acc['level'] = get_int(r'Level[:\s]*(\d+)')
         acc['platform'] = get_str(r'Platform[:\s]*([^|]+)')
@@ -150,6 +160,7 @@ class FortniteAccountParser:
                                 p = self.parse_line(line)
                                 if p:
                                     email = p['email']
+                                    # Merge logic: if duplicate, keep the one with more info (VBucks)
                                     if email not in self.accounts or p['vbucks'] > self.accounts[email].get('vbucks', 0):
                                         self.accounts[email] = p
                     except: pass
