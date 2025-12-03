@@ -71,6 +71,7 @@ class FortniteAccountParser:
         if not line or line.startswith('#') or '====' in line: return None
         
         # 1. Credentials (Email:Pass)
+        # Matches typical email:pass combo
         email_pass = re.search(r'([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)[:|\s]+([^|\s]+)', line)
         if not email_pass: return None
         
@@ -80,7 +81,8 @@ class FortniteAccountParser:
         }
         
         # 2. Prepare remaining string for attribute parsing
-        remaining = line.replace(f"{acc['email']}:{acc['password']}", "")
+        # We start searching AFTER the password to avoid confusion
+        remaining = line[email_pass.end():]
         
         # Helper extraction functions
         def get_val(pattern, default='No'):
@@ -104,40 +106,43 @@ class FortniteAccountParser:
         acc['stw'] = get_val(r'(?:STW|Save The World)[:\s]*([a-zA-Z0-9]+)')
         acc['vbucks'] = get_int(r'(?:Vbucks|V-Bucks|V_Bucks)[:\s]*([\d,]+)')
         
-        # --- ROBUST SKIN PARSING (The Fix) ---
+        # --- FIXED SKIN PARSING ---
         acc['skins'] = 0
         acc['skin_names'] = []
 
-        # Step A: Get Skin Count (Look for explicitly defined numbers)
-        count_match = re.search(r'Skins[:\s]*\[?(\d+)\]?', remaining, re.IGNORECASE)
+        # Strategy 1: Explicit Count (Matches "Skins: [25]")
+        count_match = re.search(r'Skins:\s*\[(\d+)\]', remaining, re.IGNORECASE)
         if count_match:
             acc['skins'] = int(count_match.group(1))
+        
+        # Strategy 2: Old Script Pattern (The one that works for you)
+        # Matches "Skins: [12]: Name1, Name2"
+        # It looks for the colon ':' after the brackets
+        old_script_names = re.search(r'Skins:\s*\[\d*\]:\s*(.+?)(?=\s*\||$)', remaining, re.IGNORECASE)
+        
+        if old_script_names:
+            # We found it using the strict old method!
+            raw_names = old_script_names.group(1)
+            acc['skin_names'] = [n.strip() for n in raw_names.split(',') if n.strip()]
+        else:
+            # Fallback: If strict method fails, try finding ANY list of names after "Skins:"
+            # This handles formats like "Skins: Name1, Name2" (no brackets)
+            skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
+            best_list = []
+            for section in skin_sections:
+                # Clean up brackets numbers [123] and other junk
+                clean = re.sub(r'[\[\(\<\{]\d+[\s\w]*[\]\)\>\}]', '', section)
+                clean = re.sub(r'[:=\-]', '', clean)
+                items = [x.strip() for x in clean.split(',')]
+                # Filter valid names (must be text, not numbers)
+                valid = [i for i in items if len(i) > 2 and not i.isdigit()]
+                if len(valid) > len(best_list):
+                    best_list = valid
+            
+            if best_list:
+                acc['skin_names'] = best_list
 
-        # Step B: Get Skin Names (Find longest comma-separated list after "Skins:")
-        # We find ALL text blocks that start with "Skins:"
-        skin_sections = re.findall(r'Skins:?\s*([^|]+)', remaining, re.IGNORECASE)
-        
-        best_skin_list = []
-        
-        for section in skin_sections:
-            # Clean junk from the section
-            # Remove [123], (123), (236 more)
-            clean = re.sub(r'[\[\(\<\{]\d+[\s\w]*[\]\)\>\}]', '', section)
-            clean = re.sub(r'[:=\-]', '', clean)
-            
-            # Split by comma to get potential names
-            items = [x.strip() for x in clean.split(',')]
-            
-            # Filter: A valid skin name is usually > 2 chars and NOT just a number
-            valid_names = [i for i in items if len(i) > 2 and not i.isdigit()]
-            
-            # If this section has more valid names than what we found before, keep it
-            if len(valid_names) > len(best_skin_list):
-                best_skin_list = valid_names
-
-        acc['skin_names'] = best_skin_list
-        
-        # Fallback: If count is still 0 but we found names, update count
+        # If we found names but count is 0, update count
         if acc['skins'] == 0 and len(acc['skin_names']) > 0:
             acc['skins'] = len(acc['skin_names'])
 
