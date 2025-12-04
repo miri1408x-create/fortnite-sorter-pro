@@ -13,7 +13,7 @@ import shutil
 import streamlit.components.v1 as components
 
 # --- Configuration ---
-SCRIPT_VERSION = "7.0"  # Increment to force cache reset
+SCRIPT_VERSION = "7.1"  # Increment to force cache reset
 DEFAULT_TG_TOKEN = "8320526788:AAECI8pPkEqUOEV3JaAz8VEVoLDKfnY2BCY"
 DEFAULT_CHAT_ID = "-1003446261251"
 
@@ -213,6 +213,7 @@ class FortniteAccountParser:
         self.stats['total_vbucks'] = sum(a.get('vbucks', 0) for a in vals)
         self.stats['hit_accounts'] = sum(1 for a in vals if a.get('is_hit'))
         self.stats['fa_yes'] = sum(1 for a in vals if a.get('fa') == 'Yes')
+        self.stats['stw_yes'] = sum(1 for a in vals if a.get('stw') == 'Yes')  # Added STW Count
         self.stats['total_skins'] = sum(a.get('skins', 0) for a in vals)
         
         return len(vals)
@@ -358,7 +359,7 @@ def main():
             st.session_state.clear()
             st.rerun()
 
-    st.title("⚡ Fortnite Sorter Pro v7.0")
+    st.title("⚡ Fortnite Sorter Pro v7.1")
     
     if st.session_state.processed_accounts is None:
         uploaded_file = st.file_uploader("📂 Upload ZIP file", type="zip")
@@ -404,11 +405,13 @@ def main():
                 st.session_state.clear()
                 st.rerun()
 
-        m1, m2, m3, m4 = st.columns(4)
+        # UPDATED: 5 Columns for Metrics to include STW
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total Accounts", stats['total_accounts'])
         m2.metric("Total V-Bucks", f"{stats['total_vbucks']:,}")
         m3.metric("HITs (FA+STW)", stats['hit_accounts'])
-        m4.metric("Total Skins", stats['total_skins'])
+        m4.metric("STW Accounts", stats['stw_yes'])  # New Metric
+        m5.metric("Total Skins", stats['total_skins'])
         
         st.divider()
         components.html(render_html_view(json.dumps(list(accounts.values()))), height=1000, scrolling=True)
